@@ -255,11 +255,19 @@ Three of those tests exist because the first version of the suite asserted
 what the model *ought* to do and the model disagreed; the model was right each
 time. The comments record the measured numbers.
 
-CI runs the matrix on Linux, Windows and macOS against C++17 and C++20, plus
-an AddressSanitizer / UndefinedBehaviorSanitizer build, plus a gate that fails
-the build if `FLS.hpp` or `FLS.cpp` ever grows an include outside
-`<cstdint> <string> <vector> <cmath>` or mentions an engine type. The
-portability claim is enforced, not asserted.
+CI runs the matrix on Linux and Windows against C++17 and C++20, plus
+an AddressSanitizer / UndefinedBehaviorSanitizer build, plus three portability
+gates: the two files' **code** may not grow an include outside
+`<cstdint> <string> <vector> <cmath>` or mention an engine type (comments are
+stripped first, since the header carries the Unreal recipe in prose); the
+namespace must still compile against a libc that declares `fls()`, which is
+what broke the first macOS build; and the Unreal recipe must still extract out
+of the header intact. The portability claim is enforced, not asserted.
+
+Windows is in the matrix because Unreal development is predominantly Windows
+and this is meant to drop into someone else's Unreal project. macOS was in it
+and was removed: it caught the libc collision once, but a whole platform is
+the wrong instrument for one bug, and that bug is now reproduced on Ubuntu.
 
 ---
 

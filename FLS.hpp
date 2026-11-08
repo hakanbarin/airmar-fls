@@ -377,8 +377,11 @@
 //     FLS.hpp:91:11: error: redefinition of 'fls' as different kind of symbol
 //
 // It built cleanly on Linux and Windows, so only the macOS CI job caught it.
-// Please do not "simplify" the namespace back; test_fls.cpp includes
-// <strings.h> before this header specifically to keep that from happening.
+// macOS is no longer in the matrix -- instead `tools/libc_collision_check.cpp`
+// declares `fls()` the way BSD libc does and must compile, so the collision is
+// now caught on every platform rather than on one. Please do not "simplify"
+// the namespace back: that check, and the <strings.h> include at the top of
+// test_fls.cpp, both exist to stop it.
 // ===========================================================================
 
 #ifndef FLS_HPP

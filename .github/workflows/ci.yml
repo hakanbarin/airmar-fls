@@ -6,12 +6,19 @@ on:
 
 jobs:
   build-and-test:
-    # The sensor has no dependencies, so the matrix is the compilers and
-    # standards it claims to support, not a list of packages to install.
+    # Ubuntu is where this is developed and where the ROS side runs. Windows is
+    # here because Unreal Engine development is predominantly Windows, and this
+    # sensor is meant to be dropped into someone else's Unreal project.
+    #
+    # macOS was in this matrix and was removed. It earned its place once -- it
+    # was the only job that caught `namespace fls` colliding with BSD libc's
+    # `int fls(int)` -- but keeping a whole platform to guard one bug is the
+    # wrong instrument. The `portability` job below now reproduces that exact
+    # collision ON UBUNTU, so the protection survived the platform.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest]
         std: [17, 20]
     runs-on: ${{ matrix.os }}
     steps:
@@ -34,46 +41,62 @@ jobs:
                   FLS.cpp test_fls.cpp -o test_fls_asan
           ./test_fls_asan
 
-  no-hidden-dependencies:
+  portability:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: The two files must depend on nothing but the standard library
-        # This is the portability claim, enforced rather than asserted: any
-        # include that is not a C++ standard header, and any mention of an
-        # engine or middleware type, fails the build.
+        # This is the portability claim, enforced rather than asserted.
+        #
+        # Comments are stripped first. FLS.hpp carries the Unreal integration
+        # recipe inside its comments on purpose -- the deliverable is two files
+        # and the receiver should not need the README -- so the header mentions
+        # UWorld and FVector in prose while its CODE must not. Stripping with
+        # -fpreprocessed means includes are NOT re-expanded, so this inspects
+        # these two files and nothing else.
         run: |
           set -e
-          bad=$(grep -hoP '#include\s*[<"]\K[^">]+' FLS.hpp FLS.cpp \
-                | grep -vE '^(cstdint|string|vector|cmath|FLS\.hpp)$' || true)
-          if [ -n "$bad" ]; then echo "unexpected include(s): $bad"; exit 1; fi
-          if grep -nE '\b(UE_LOG|FVector|UObject|UWorld|AActor|rclcpp|ros::|Q_OBJECT)\b' FLS.hpp FLS.cpp; then
-            echo "engine or middleware type found in a portable file"; exit 1
-          fi
-          echo "FLS.hpp + FLS.cpp depend only on <cstdint> <string> <vector> <cmath>"
+          for f in FLS.hpp FLS.cpp; do
+            g++ -fpreprocessed -dD -E -P "$f" > "stripped_$f"
+            bad=$(grep -hoP '#include\s*[<"]\K[^">]+' "stripped_$f" \
+                  | grep -vE '^(cstdint|string|vector|cmath|FLS\.hpp)$' || true)
+            if [ -n "$bad" ]; then echo "$f: unexpected include(s): $bad"; exit 1; fi
+            if grep -nE '\b(UE_LOG|FVector|UObject|UWorld|AActor|FString|rclcpp|ros::|Q_OBJECT)\b' "stripped_$f"; then
+              echo "$f: engine or middleware type in CODE (not a comment)"; exit 1
+            fi
+          done
+          echo "code depends only on <cstdint> <string> <vector> <cmath>"
 
-  unreal-recipe-is-extractable:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      - name: The namespace must not collide with a libc function
+        # Reproduces the bug that broke the first macOS build, on Ubuntu.
+        # glibc does not declare fls(), so the check declares it the way BSD
+        # and macOS <strings.h> do. If the namespace is ever renamed back to
+        # something libc already owns, this fails everywhere instead of only
+        # on a platform that may not be in the matrix.
+        run: |
+          set -e
+          c++ -std=c++17 -I. -Wall -Wextra -Werror -O1 \
+              FLS.cpp tools/libc_collision_check.cpp -o libc_collision_check
+          ./libc_collision_check
+          echo "namespace does not collide with fls/flsl/ffs"
+
       - name: The Unreal recipe in FLS.hpp must still come out as real files
-        # The recipe lives in the header's comments, because the deliverable is
-        # two files. Comment text rots. This does not compile it -- the runners
-        # have no Unreal Engine, and tools/unreal_build_check.sh does that on a
-        # machine that has one -- but it does fail the build if the block is
-        # mangled, truncated or renamed.
+        # The recipe lives in the header's comments. Comment text rots. This
+        # does not compile it -- the runners have no Unreal Engine, and
+        # tools/unreal_build_check.sh does that on a machine that has one --
+        # but it fails the build if the block is mangled or renamed.
         run: |
           set -e
           out=$(mktemp -d)
           bash tools/extract_unreal_files.sh "$out"
           test -s "$out/FlsUnrealWorld.h"
           test -s "$out/FlsSonarComponent.h"
-          grep -q 'public airmar::IWorld'           "$out/FlsUnrealWorld.h"
-          grep -q 'LineTraceSingleByChannel'        "$out/FlsUnrealWorld.h"
-          grep -q 'Hit.Distance \* 0.01'            "$out/FlsUnrealWorld.h"
-          grep -q 'UCLASS'                          "$out/FlsSonarComponent.h"
-          grep -q 'public UActorComponent'          "$out/FlsSonarComponent.h"
-          grep -q 'Sonar.Update'                    "$out/FlsSonarComponent.h"
-          # No stray comment markers survived the extraction.
+          grep -q 'public airmar::IWorld'    "$out/FlsUnrealWorld.h"
+          grep -q 'LineTraceSingleByChannel' "$out/FlsUnrealWorld.h"
+          grep -q 'Hit.Distance \* 0.01'     "$out/FlsUnrealWorld.h"
+          grep -q 'UCLASS'                   "$out/FlsSonarComponent.h"
+          grep -q 'public UActorComponent'   "$out/FlsSonarComponent.h"
+          grep -q 'Sonar.Update'             "$out/FlsSonarComponent.h"
           ! grep -qE '^// ' "$out/FlsUnrealWorld.h" "$out/FlsSonarComponent.h"
           echo "recipe extracted and intact"
