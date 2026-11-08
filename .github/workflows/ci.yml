@@ -51,3 +51,29 @@ jobs:
             echo "engine or middleware type found in a portable file"; exit 1
           fi
           echo "FLS.hpp + FLS.cpp depend only on <cstdint> <string> <vector> <cmath>"
+
+  unreal-recipe-is-extractable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The Unreal recipe in FLS.hpp must still come out as real files
+        # The recipe lives in the header's comments, because the deliverable is
+        # two files. Comment text rots. This does not compile it -- the runners
+        # have no Unreal Engine, and tools/unreal_build_check.sh does that on a
+        # machine that has one -- but it does fail the build if the block is
+        # mangled, truncated or renamed.
+        run: |
+          set -e
+          out=$(mktemp -d)
+          bash tools/extract_unreal_files.sh "$out"
+          test -s "$out/FlsUnrealWorld.h"
+          test -s "$out/FlsSonarComponent.h"
+          grep -q 'public airmar::IWorld'           "$out/FlsUnrealWorld.h"
+          grep -q 'LineTraceSingleByChannel'        "$out/FlsUnrealWorld.h"
+          grep -q 'Hit.Distance \* 0.01'            "$out/FlsUnrealWorld.h"
+          grep -q 'UCLASS'                          "$out/FlsSonarComponent.h"
+          grep -q 'public UActorComponent'          "$out/FlsSonarComponent.h"
+          grep -q 'Sonar.Update'                    "$out/FlsSonarComponent.h"
+          # No stray comment markers survived the extraction.
+          ! grep -qE '^// ' "$out/FlsUnrealWorld.h" "$out/FlsSonarComponent.h"
+          echo "recipe extracted and intact"

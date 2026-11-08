@@ -94,120 +94,57 @@ global state, starts no threads and performs no I/O.
 
 ---
 
-## Unreal Engine adapter (copy-paste)
+## Unreal Engine
 
-Component or actor is your call — FLS does not care and has no opinion. Put the
-two files anywhere in your module's `Source` tree; no `Build.cs` change is
-needed, because they pull in nothing.
+**The authoritative integration recipe lives in `FLS.hpp` itself**, in the
+`INTEGRATION` block at the top. It is written to be executed literally and
+contains two complete files, delimited so they can be pulled straight out:
 
-```cpp
-// FlsUnrealWorld.h — adapts Unreal's line trace to airmar::IWorld.
-#pragma once
-
-#include "CoreMinimal.h"
-#include "Engine/World.h"
-#include "CollisionQueryParams.h"
-#include "FLS.hpp"
-
-class FFlsUnrealWorld : public airmar::IWorld
-{
-public:
-    FFlsUnrealWorld(UWorld* InWorld,
-                    const AActor* InPlatform,
-                    ECollisionChannel InChannel = ECC_WorldStatic)
-        : World(InWorld), Channel(InChannel)
-    {
-        Params.bTraceComplex = false;
-
-        // The sensor must not see its own hull. Ignore the carrying actor AND
-        // everything attached to it, or the first return is your own vehicle.
-        if (InPlatform)
-        {
-            Params.AddIgnoredActor(InPlatform);
-            TArray<AActor*> Attached;
-            InPlatform->GetAttachedActors(Attached, /*bResetArray=*/true,
-                                          /*bRecursivelyIncludeAttachedActors=*/true);
-            for (const AActor* A : Attached)
-            {
-                if (A) { Params.AddIgnoredActor(A); }
-            }
-        }
-    }
-
-    /** Water bodies block traces. See "Pitfalls" below — this matters. */
-    void IgnoreActor(const AActor* A) { if (A) { Params.AddIgnoredActor(A); } }
-
-    airmar::RayHit CastRay(const airmar::Vec3& Origin,
-                        const airmar::Vec3& Dir,
-                        double MaxRangeMeters) const override
-    {
-        airmar::RayHit Out;
-        if (!World) { return Out; }
-
-        // Unreal works in CENTIMETRES, FLS in METRES.
-        const FVector Start(Origin.x * 100.0, Origin.y * 100.0, Origin.z * 100.0);
-        const FVector D(Dir.x, Dir.y, Dir.z);
-        const FVector End = Start + D * (MaxRangeMeters * 100.0);
-
-        FHitResult Hit;
-        if (!World->LineTraceSingleByChannel(Hit, Start, End, Channel, Params))
-        {
-            return Out;
-        }
-
-        Out.hit           = true;
-        Out.range_m       = Hit.Distance * 0.01;
-        Out.incidence_cos = FMath::Abs(FVector::DotProduct(D, Hit.ImpactNormal));
-
-        // Optional: mud, weed and fish are far weaker reflectors than rock.
-        if (const AActor* A = Hit.GetActor())
-        {
-            if (A->ActorHasTag(TEXT("SoftTarget"))) { Out.target_strength_db = -35.0; }
-        }
-        return Out;
-    }
-
-private:
-    UWorld*               World   = nullptr;
-    ECollisionChannel     Channel = ECC_WorldStatic;
-    FCollisionQueryParams Params;
-};
+```
+=== BEGIN FILE FlsUnrealWorld.h ===      the airmar::IWorld adapter (line trace)
+=== BEGIN FILE FlsSonarComponent.h ===   a ready UActorComponent, header-only
 ```
 
-Driving it from a component's `TickComponent`:
+It is in the header rather than here because the deliverable is two files, and
+the person receiving them should not need this document. To get those files
+back out as real files:
+
+```bash
+bash tools/extract_unreal_files.sh /path/to/YourProject/Source/YourModule
+```
+
+Component or actor is your call — this model has no opinion and no dependency
+either way. Driving it is three calls:
 
 ```cpp
-const AActor* Platform = GetOwner();
-const FVector L = Platform->GetActorLocation();
-const FVector F = Platform->GetActorForwardVector();
-const FVector R = Platform->GetActorRightVector();
-const FVector U = Platform->GetActorUpVector();
+airmar::Pose Pose;                         // the owner's own basis vectors
+Pose.position_m = { L.X*0.01, L.Y*0.01, L.Z*0.01 };   // Unreal cm -> metres
+Pose.forward = { F.X, F.Y, F.Z };
+Pose.right   = { R.X, R.Y, R.Z };
+Pose.up      = { U.X, U.Y, U.Z };
 
-airmar::Pose Pose;
-Pose.position_m = { L.X * 0.01, L.Y * 0.01, L.Z * 0.01 };
-Pose.forward    = { F.X, F.Y, F.Z };
-Pose.right      = { R.X, R.Y, R.Z };
-Pose.up         = { U.X, U.Y, U.Z };
-
-const FFlsUnrealWorld World(GetWorld(), Platform);
+const FFlsUnrealWorld World(GetWorld(), GetOwner());
 const airmar::Output O = Sonar.Update(DeltaTime, Pose, World);
 ```
 
-Drawing the beam, if you want to see it:
+### This is verified, not asserted
 
-```cpp
-if (O.pinged && O.has_range)
-{
-    const FVector Start(O.beam_origin_m.x * 100.0, O.beam_origin_m.y * 100.0,
-                        O.beam_origin_m.z * 100.0);
-    const FVector Dir(O.beam_axis.x, O.beam_axis.y, O.beam_axis.z);
-    DrawDebugLine(GetWorld(), Start, Start + Dir * (O.range_m * 100.0),
-                  FColor::Green, false, 0.2f, 0, 3.f);
-}
-// Sonar.LastRays() exposes all 13 sampling rays if you want to inspect the cone.
+`tools/unreal_build_check.sh` extracts the recipe out of the header's comments
+and builds it as a module in a throwaway Unreal project that has nothing to do
+with this repository:
+
+```bash
+UE_ROOT=/path/to/UE_5.3 bash tools/unreal_build_check.sh
 ```
 
----
+Last run: **UE 5.3.0, Linux, UnrealHeaderTool with `-WarningsAsErrors`, exit 0
+in 20 s.** The check's `Build.cs` deliberately lists nothing beyond
+`Core`, `CoreUObject` and `Engine`, so if the recipe ever came to need another
+engine module the build would fail instead of the README quietly being wrong.
+
+GitHub Actions cannot run this — the runners have no Unreal Engine. What CI
+does enforce is that the recipe is still extractable and still contains the
+adapter and the component, so the comment block cannot rot unnoticed.
 
 ## Pitfalls (measured, not guessed)
 

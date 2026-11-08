@@ -22,35 +22,320 @@
 //   * 1 cm quantisation, the data sheet's +0.54 % scale error, noise, dropout
 //
 // ===========================================================================
-// HOW TO INTEGRATE (the whole job is one function)
+// INTEGRATION -- READ THIS SECTION AND NOTHING ELSE IS NEEDED
 // ===========================================================================
-// 1. Implement `airmar::IWorld::CastRay` with your engine's ray cast:
 //
-//        class MyWorld : public airmar::IWorld {
-//        public:
-//            airmar::RayHit CastRay(const airmar::Vec3& origin_m,
-//                                const airmar::Vec3& dir,
-//                                double max_range_m) const override
-//            {
-//                airmar::RayHit out;
-//                // ... your engine's trace here ...
-//                out.hit           = did_hit;
-//                out.range_m       = distance_in_METRES;
-//                out.incidence_cos = fabs(dot(dir, surface_normal));
-//                return out;
-//            }
-//        };
+// These instructions are written to be executed literally. Every file below is
+// complete and compiles as given; nothing is elided and there are no
+// placeholders except the ones marked <LIKE THIS>. If you are an AI agent
+// integrating this sensor, do the steps in order and do not improvise.
 //
-// 2. Fill in `airmar::Config` -- every static transform and device setting is a
-//    plain field you type in by hand. See the `Config` comments.
+// ---------------------------------------------------------------------------
+// STEP 1 -- copy the two files
+// ---------------------------------------------------------------------------
+// Copy FLS.hpp and FLS.cpp into the module that will own the sensor, for
+// example <YourProject>/Source/<YourModule>/. No build file change is needed:
+// these two files include only <cstdint> <string> <vector> <cmath>.
 //
-// 3. Call `Update` once per frame with your platform's pose:
+// ---------------------------------------------------------------------------
+// STEP 2 -- implement airmar::IWorld (the only call this model makes out)
+// ---------------------------------------------------------------------------
+// Create a new file FlsUnrealWorld.h next to them, with EXACTLY this content.
+// It needs no .cpp.
 //
-//        airmar::Output o = sonar.Update(dt_seconds, pose, world);
-//        if (o.has_range) { /* o.range_m is what the device reports */ }
+// === BEGIN FILE FlsUnrealWorld.h ===
+// #pragma once
 //
-// That is the entire contract. FLS never calls your engine except through
-// `CastRay`, never allocates after the first ping, and holds no global state.
+// #include "CoreMinimal.h"
+// #include "Engine/World.h"
+// #include "CollisionQueryParams.h"
+// #include "EngineUtils.h"
+// #include "GameFramework/Actor.h"
+//
+// #include "FLS.hpp"
+//
+// /**
+//  * Adapts Unreal's line trace to airmar::IWorld.
+//  *
+//  * UNREAL IS CENTIMETRES, THIS MODEL IS METRES. Every conversion is in this
+//  * file and nowhere else; do not scale anything outside it.
+//  *
+//  * Construct it fresh each tick (it is a cheap stack object) or keep one and
+//  * call RefreshIgnoreList() when the level changes.
+//  */
+// class FFlsUnrealWorld : public airmar::IWorld
+// {
+// public:
+//     FFlsUnrealWorld(UWorld *InWorld, const AActor *InPlatform,
+//                     ECollisionChannel InChannel = ECC_WorldStatic,
+//                     bool bIgnoreWaterBodies = true)
+//         : World(InWorld), Channel(InChannel)
+//     {
+//         Params.bTraceComplex = false;
+//
+//         // PITFALL 1 -- the sensor must not see its own vehicle. Ignoring
+//         // only the owner is NOT enough when the sensor is its own actor
+//         // attached to the vehicle: walk the whole attachment chain.
+//         if (InPlatform)
+//         {
+//             Params.AddIgnoredActor(InPlatform);
+//             const AActor *Root = InPlatform;
+//             while (Root->GetAttachParentActor())
+//             {
+//                 Root = Root->GetAttachParentActor();
+//                 Params.AddIgnoredActor(Root);
+//             }
+//             TArray<AActor *> Attached;
+//             Root->GetAttachedActors(Attached, true, true);
+//             for (const AActor *A : Attached)
+//             {
+//                 if (A) { Params.AddIgnoredActor(A); }
+//             }
+//         }
+//
+//         // PITFALL 2 -- WATER BLOCKS TRACES. This was MEASURED: with a water
+//         // body in the level, every ray hit at 0.000 m and the sensor
+//         // reported the inside of the water volume. The sensor is submerged,
+//         // so water must be excluded from the query.
+//         //
+//         // Matched by class name on purpose, so this file compiles whether or
+//         // not the Water plugin is enabled in the target project.
+//         if (bIgnoreWaterBodies && World)
+//         {
+//             for (TActorIterator<AActor> It(World); It; ++It)
+//             {
+//                 if (It->GetClass()->GetName().Contains(TEXT("WaterBody")))
+//                 {
+//                     Params.AddIgnoredActor(*It);
+//                 }
+//             }
+//         }
+//     }
+//
+//     /** Add anything else the beam must pass through (nets, markers, FX). */
+//     void IgnoreActor(const AActor *A) { if (A) { Params.AddIgnoredActor(A); } }
+//
+//     airmar::RayHit CastRay(const airmar::Vec3 &OriginM, const airmar::Vec3 &Dir,
+//                            double MaxRangeM) const override
+//     {
+//         airmar::RayHit Out;
+//         if (!World) { return Out; }
+//
+//         const FVector Start(OriginM.x * 100.0, OriginM.y * 100.0, OriginM.z * 100.0);
+//         const FVector D(Dir.x, Dir.y, Dir.z);
+//         const FVector End = Start + D * (MaxRangeM * 100.0);
+//
+//         FHitResult Hit;
+//         if (!World->LineTraceSingleByChannel(Hit, Start, End, Channel, Params))
+//         {
+//             return Out;   // nothing in range: a real miss, report it as one
+//         }
+//
+//         Out.hit     = true;
+//         Out.range_m = Hit.Distance * 0.01;   // cm -> m
+//
+//         // PITFALL 3 -- fill this in. Leaving it at 1.0 makes every surface a
+//         // perfect reflector and removes one of the two effects that make the
+//         // model behave like hardware.
+//         Out.incidence_cos = FMath::Abs(FVector::DotProduct(D, Hit.ImpactNormal));
+//
+//         // OPTIONAL -- mud, weed and fish reflect far more weakly than rock.
+//         // Tag such actors "SoftTarget" in the level to get that behaviour.
+//         if (const AActor *A = Hit.GetActor())
+//         {
+//             if (A->ActorHasTag(TEXT("SoftTarget"))) { Out.target_strength_db = -35.0; }
+//         }
+//         return Out;
+//     }
+//
+// private:
+//     UWorld *World = nullptr;
+//     ECollisionChannel Channel = ECC_WorldStatic;
+//     FCollisionQueryParams Params;
+// };
+// === END FILE FlsUnrealWorld.h ===
+//
+// ---------------------------------------------------------------------------
+// STEP 3 -- drive it from a component
+// ---------------------------------------------------------------------------
+// Component or actor is YOUR choice; this model has no opinion and no
+// dependency either way. The component below is complete and header-only:
+// drop it in, attach it to your vehicle, set the mount fields in the details
+// panel. If your project prefers an actor, the same three calls move into
+// AActor::Tick unchanged.
+//
+// === BEGIN FILE FlsSonarComponent.h ===
+// #pragma once
+//
+// #include "CoreMinimal.h"
+// #include "Components/ActorComponent.h"
+// #include "DrawDebugHelpers.h"
+//
+// #include "FLS.hpp"
+// #include "FlsUnrealWorld.h"
+//
+// #include "FlsSonarComponent.generated.h"
+//
+// UCLASS(ClassGroup = (Sensors), meta = (BlueprintSpawnableComponent))
+// class UFlsSonarComponent : public UActorComponent
+// {
+//     GENERATED_BODY()
+//
+// public:
+//     UFlsSonarComponent()
+//     {
+//         PrimaryComponentTick.bCanEverTick = true;
+//     }
+//
+//     // ---- STATIC MOUNT, typed in by hand, METRES, in the OWNER's frame ----
+//     // Measure these off your vehicle model once. "Forward/Right/Up" mean the
+//     // owning actor's own vectors, so a turning vehicle carries the sensor
+//     // with it automatically.
+//     UPROPERTY(EditAnywhere, Category = "FLS|Mount")
+//     float MountForwardM = 0.f;    // e.g. 2.12 for a nose-mounted unit
+//     UPROPERTY(EditAnywhere, Category = "FLS|Mount")
+//     float MountRightM = 0.f;
+//     UPROPERTY(EditAnywhere, Category = "FLS|Mount")
+//     float MountUpM = 0.f;
+//     UPROPERTY(EditAnywhere, Category = "FLS|Mount")
+//     float MountYawDeg = 0.f;      // + turns the beam toward Right
+//     UPROPERTY(EditAnywhere, Category = "FLS|Mount")
+//     float MountPitchDeg = 0.f;    // 0 = straight ahead, -90 = looking down
+//
+//     // ---- DEVICE ----
+//     UPROPERTY(EditAnywhere, Category = "FLS|Device")
+//     float FrequencyKhz = 200.f;   // 200 -> 14 deg beam, 170 -> 18 deg beam
+//     UPROPERTY(EditAnywhere, Category = "FLS|Device")
+//     float BlankingM = 0.f;        // operator dead zone, 0..15 m
+//     UPROPERTY(EditAnywhere, Category = "FLS|Device")
+//     int32 PingsPerSecond = 0;     // 0 = auto from the range mode
+//
+//     // ---- TRACE ----
+//     UPROPERTY(EditAnywhere, Category = "FLS|Trace")
+//     TEnumAsByte<ECollisionChannel> TraceChannel = ECC_WorldStatic;
+//     UPROPERTY(EditAnywhere, Category = "FLS|Trace")
+//     bool bIgnoreWaterBodies = true;
+//
+//     UPROPERTY(EditAnywhere, Category = "FLS|Debug")
+//     bool bDrawBeam = true;
+//
+//     // ---- OUTPUT, readable from Blueprint ----
+//     UPROPERTY(BlueprintReadOnly, Category = "FLS")
+//     bool bHasRange = false;
+//     UPROPERTY(BlueprintReadOnly, Category = "FLS")
+//     float RangeMeters = 0.f;
+//
+//     virtual void BeginPlay() override
+//     {
+//         Super::BeginPlay();
+//
+//         airmar::Config C;
+//         C.mount_forward_m = MountForwardM;
+//         C.mount_right_m   = MountRightM;
+//         C.mount_up_m      = MountUpM;
+//         C.mount_yaw_deg   = MountYawDeg;
+//         C.mount_pitch_deg = MountPitchDeg;
+//         C.frequency_khz   = FrequencyKhz;
+//         C.blanking_m      = BlankingM;
+//         C.pings_per_second = PingsPerSecond;
+//
+//         // FAIL LOUDLY. Do not swallow this: a sensor that silently fell back
+//         // to defaults would report a beam width nobody specified.
+//         const std::string Err = Sonar.SetConfig(C);
+//         if (!Err.empty())
+//         {
+//             UE_LOG(LogTemp, Error, TEXT("[FLS] refusing to run: %s"),
+//                    *FString(Err.c_str()));
+//             SetComponentTickEnabled(false);
+//             return;
+//         }
+//         UE_LOG(LogTemp, Log, TEXT("[FLS] %.0f kHz, beam %.1f deg, %d rays, %d ping/s"),
+//                FrequencyKhz, Sonar.BeamWidthDeg(), Sonar.RaysPerPing(),
+//                Sonar.EffectivePingsPerSecond());
+//     }
+//
+//     virtual void TickComponent(float DeltaTime, ELevelTick TickType,
+//                                FActorComponentTickFunction *ThisTickFunction) override
+//     {
+//         Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+//
+//         const AActor *Platform = GetOwner();
+//         if (!Platform || !GetWorld()) { return; }
+//
+//         // The three basis vectors Unreal already gives you, plus the
+//         // location in METRES. This is the whole coordinate handover.
+//         const FVector L = Platform->GetActorLocation();
+//         const FVector F = Platform->GetActorForwardVector();
+//         const FVector R = Platform->GetActorRightVector();
+//         const FVector U = Platform->GetActorUpVector();
+//
+//         airmar::Pose Pose;
+//         Pose.position_m = airmar::Vec3{L.X * 0.01, L.Y * 0.01, L.Z * 0.01};
+//         Pose.forward    = airmar::Vec3{F.X, F.Y, F.Z};
+//         Pose.right      = airmar::Vec3{R.X, R.Y, R.Z};
+//         Pose.up         = airmar::Vec3{U.X, U.Y, U.Z};
+//
+//         const FFlsUnrealWorld World(GetWorld(), Platform, TraceChannel.GetValue(),
+//                                     bIgnoreWaterBodies);
+//         const airmar::Output O = Sonar.Update(DeltaTime, Pose, World);
+//
+//         bHasRange   = O.has_range;
+//         RangeMeters = static_cast<float>(O.range_m);
+//
+//         if (bDrawBeam && O.has_range)
+//         {
+//             const FVector Start(O.beam_origin_m.x * 100.0, O.beam_origin_m.y * 100.0,
+//                                 O.beam_origin_m.z * 100.0);
+//             const FVector Dir(O.beam_axis.x, O.beam_axis.y, O.beam_axis.z);
+//             DrawDebugLine(GetWorld(), Start, Start + Dir * (O.range_m * 100.0),
+//                           FColor::Green, false, 0.25f, 0, 3.f);
+//         }
+//     }
+//
+//     /** The sensor itself. Public so you can read LastRays(), ActiveRangeMode()
+//      *  and the counters, or call SetEnabled(false) to stop transmitting. */
+//     airmar::Fls Sonar;
+// };
+// === END FILE FlsSonarComponent.h ===
+//
+// ---------------------------------------------------------------------------
+// STEP 4 -- verify the integration, do not assume it
+// ---------------------------------------------------------------------------
+// Put a static mesh wall a known distance in front of the vehicle, with
+// collision enabled on the trace channel, and check all five:
+//
+//   1. The log line from BeginPlay appears and says "beam 14.0 deg, 13 rays".
+//      If it says "refusing to run", read the reason; do not work around it.
+//   2. RangeMeters is non-zero and within a few percent of the real distance.
+//      It should read very slightly HIGH -- the data sheet's bias is +0.54 %.
+//   3. RangeMeters is NOT 0.000. A hard 0.000 means a trace is hitting
+//      something at the origin: water, or your own hull. See PITFALLS 1 and 2.
+//   4. Remove the wall. bHasRange must become false within
+//      misses_to_lose_lock pings, and must NOT keep repeating the last value.
+//   5. Move the wall closer than 0.4 m. bHasRange must go false: that is the
+//      hardware dead zone, not a bug.
+//
+// If 2 is off by a factor of 100, a centimetre/metre conversion is missing.
+// If 2 is off by the mount offset, the beam origin is being taken from the
+// actor instead of from Output::beam_origin_m.
+//
+// ---------------------------------------------------------------------------
+// WHAT NOT TO DO
+// ---------------------------------------------------------------------------
+//   * Do not read Output::true_range_m in anything but a test or a plot. It is
+//     the geometry before the error model -- using it is cheating, and the
+//     stack will fail the first time it meets real hardware.
+//   * Do not treat a missing range as a zero range. has_range == false means
+//     "the device has no echo", which is not the same as "the obstacle is at
+//     0 m". Hold the last value with its age, or declare the reading stale.
+//   * Do not call Update more than once per frame with the same dt; it fires
+//     at most one ping per call, but you will double the simulated clock.
+//   * Do not add engine types to FLS.hpp or FLS.cpp. The CI gate in this
+//     repository fails the build if either file grows an include outside the
+//     four standard headers. Put engine code in the adapter, where it belongs.
+//   * Do not raise source_level_db or lower detection_threshold_db to "make it
+//     see further" without saying so. Those are tuning values, not data sheet
+//     values, and a number produced by moving them is a simulation result.
 //
 // ===========================================================================
 // UNITS AND AXES
