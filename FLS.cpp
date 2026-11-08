@@ -7,7 +7,7 @@
 
 #include <cmath>
 
-namespace fls
+namespace airmar
 {
 
 // ===========================================================================
@@ -739,4 +739,4 @@ const std::vector<Ray> &Fls::LastRays() const
     return rays_;
 }
 
-} // namespace fls
+} // namespace airmar

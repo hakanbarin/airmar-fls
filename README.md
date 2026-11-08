@@ -37,16 +37,16 @@ A sensor that always answers is the most dangerous kind of fake.
 
 ### 1. Implement the ray cast
 
-`fls::IWorld::CastRay` is the **only** call FLS makes into your engine.
+`airmar::IWorld::CastRay` is the **only** call FLS makes into your engine.
 
 ```cpp
-class MyWorld : public fls::IWorld {
+class MyWorld : public airmar::IWorld {
 public:
-    fls::RayHit CastRay(const fls::Vec3& origin_m,
-                        const fls::Vec3& dir,
+    airmar::RayHit CastRay(const airmar::Vec3& origin_m,
+                        const airmar::Vec3& dir,
                         double max_range_m) const override
     {
-        fls::RayHit out;
+        airmar::RayHit out;
         // ... your engine's trace ...
         out.hit           = did_hit;
         out.range_m       = distance_in_METRES;
@@ -61,7 +61,7 @@ public:
 Every static transform and device setting is a plain field you type in by hand.
 
 ```cpp
-fls::Config cfg;
+airmar::Config cfg;
 cfg.mount_forward_m = 2.12;   // transducer at the nose, along the hull axis
 cfg.mount_up_m      = -0.004; // on the hull centreline
 cfg.mount_pitch_deg = 0.0;    // looking straight ahead (-90 = downward altimeter)
@@ -74,16 +74,16 @@ if (!err.empty()) { /* fail loudly: do not ship a sensor you did not configure *
 ### 3. Update once per frame
 
 ```cpp
-fls::Fls  sonar(cfg);
+airmar::Fls  sonar(cfg);
 MyWorld   world;
 
-fls::Pose pose;
+airmar::Pose pose;
 pose.position_m = /* platform origin, METRES */;
 pose.forward    = /* your engine's forward vector */;
 pose.right      = /* ... right ... */;
 pose.up         = /* ... up ... */;
 
-const fls::Output o = sonar.Update(dt_seconds, pose, world);
+const airmar::Output o = sonar.Update(dt_seconds, pose, world);
 if (o.has_range) {
     use(o.range_m);          // what the device reports
 }
@@ -101,7 +101,7 @@ two files anywhere in your module's `Source` tree; no `Build.cs` change is
 needed, because they pull in nothing.
 
 ```cpp
-// FlsUnrealWorld.h — adapts Unreal's line trace to fls::IWorld.
+// FlsUnrealWorld.h — adapts Unreal's line trace to airmar::IWorld.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -109,7 +109,7 @@ needed, because they pull in nothing.
 #include "CollisionQueryParams.h"
 #include "FLS.hpp"
 
-class FFlsUnrealWorld : public fls::IWorld
+class FFlsUnrealWorld : public airmar::IWorld
 {
 public:
     FFlsUnrealWorld(UWorld* InWorld,
@@ -137,11 +137,11 @@ public:
     /** Water bodies block traces. See "Pitfalls" below — this matters. */
     void IgnoreActor(const AActor* A) { if (A) { Params.AddIgnoredActor(A); } }
 
-    fls::RayHit CastRay(const fls::Vec3& Origin,
-                        const fls::Vec3& Dir,
+    airmar::RayHit CastRay(const airmar::Vec3& Origin,
+                        const airmar::Vec3& Dir,
                         double MaxRangeMeters) const override
     {
-        fls::RayHit Out;
+        airmar::RayHit Out;
         if (!World) { return Out; }
 
         // Unreal works in CENTIMETRES, FLS in METRES.
@@ -183,14 +183,14 @@ const FVector F = Platform->GetActorForwardVector();
 const FVector R = Platform->GetActorRightVector();
 const FVector U = Platform->GetActorUpVector();
 
-fls::Pose Pose;
+airmar::Pose Pose;
 Pose.position_m = { L.X * 0.01, L.Y * 0.01, L.Z * 0.01 };
 Pose.forward    = { F.X, F.Y, F.Z };
 Pose.right      = { R.X, R.Y, R.Z };
 Pose.up         = { U.X, U.Y, U.Z };
 
 const FFlsUnrealWorld World(GetWorld(), Platform);
-const fls::Output O = Sonar.Update(DeltaTime, Pose, World);
+const airmar::Output O = Sonar.Update(DeltaTime, Pose, World);
 ```
 
 Drawing the beam, if you want to see it:

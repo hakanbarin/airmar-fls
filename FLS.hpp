@@ -24,15 +24,15 @@
 // ===========================================================================
 // HOW TO INTEGRATE (the whole job is one function)
 // ===========================================================================
-// 1. Implement `fls::IWorld::CastRay` with your engine's ray cast:
+// 1. Implement `airmar::IWorld::CastRay` with your engine's ray cast:
 //
-//        class MyWorld : public fls::IWorld {
+//        class MyWorld : public airmar::IWorld {
 //        public:
-//            fls::RayHit CastRay(const fls::Vec3& origin_m,
-//                                const fls::Vec3& dir,
+//            airmar::RayHit CastRay(const airmar::Vec3& origin_m,
+//                                const airmar::Vec3& dir,
 //                                double max_range_m) const override
 //            {
-//                fls::RayHit out;
+//                airmar::RayHit out;
 //                // ... your engine's trace here ...
 //                out.hit           = did_hit;
 //                out.range_m       = distance_in_METRES;
@@ -41,12 +41,12 @@
 //            }
 //        };
 //
-// 2. Fill in `fls::Config` -- every static transform and device setting is a
+// 2. Fill in `airmar::Config` -- every static transform and device setting is a
 //    plain field you type in by hand. See the `Config` comments.
 //
 // 3. Call `Update` once per frame with your platform's pose:
 //
-//        fls::Output o = sonar.Update(dt_seconds, pose, world);
+//        airmar::Output o = sonar.Update(dt_seconds, pose, world);
 //        if (o.has_range) { /* o.range_m is what the device reports */ }
 //
 // That is the entire contract. FLS never calls your engine except through
@@ -81,6 +81,21 @@
 //
 // SPDX-License-Identifier: MIT
 
+// ===========================================================================
+// WHY THE NAMESPACE IS `airmar` AND NOT `fls`
+// ===========================================================================
+// It was `fls` first. That does not compile on macOS or any BSD, because
+// their libc declares `int fls(int)` -- "find last bit set" -- in
+// <strings.h>, and a namespace name collides with an ordinary function name
+// at global scope:
+//
+//     FLS.hpp:91:11: error: redefinition of 'fls' as different kind of symbol
+//
+// It built cleanly on Linux and Windows, so only the macOS CI job caught it.
+// Please do not "simplify" the namespace back; test_fls.cpp includes
+// <strings.h> before this header specifically to keep that from happening.
+// ===========================================================================
+
 #ifndef FLS_HPP
 #define FLS_HPP
 
@@ -88,7 +103,7 @@
 #include <string>
 #include <vector>
 
-namespace fls
+namespace airmar
 {
 
 // ===========================================================================
@@ -487,6 +502,6 @@ class Fls
     Output last_;
 };
 
-} // namespace fls
+} // namespace airmar
 
 #endif // FLS_HPP
