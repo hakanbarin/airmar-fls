@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    # The sensor has no dependencies, so the matrix is the compilers and
+    # standards it claims to support, not a list of packages to install.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        std: [17, 20]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build -DCMAKE_CXX_STANDARD=${{ matrix.std }}
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -C Release
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Address and undefined behaviour sanitizers
+        run: |
+          clang++ -std=c++17 -Wall -Wextra -Werror \
+                  -fsanitize=address,undefined -fno-omit-frame-pointer -O1 \
+                  FLS.cpp test_fls.cpp -o test_fls_asan
+          ./test_fls_asan
+
+  no-hidden-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The two files must depend on nothing but the standard library
+        # This is the portability claim, enforced rather than asserted: any
+        # include that is not a C++ standard header, and any mention of an
+        # engine or middleware type, fails the build.
+        run: |
+          set -e
+          bad=$(grep -hoP '#include\s*[<"]\K[^">]+' FLS.hpp FLS.cpp \
+                | grep -vE '^(cstdint|string|vector|cmath|FLS\.hpp)$' || true)
+          if [ -n "$bad" ]; then echo "unexpected include(s): $bad"; exit 1; fi
+          if grep -nE '\b(UE_LOG|FVector|UObject|UWorld|AActor|rclcpp|ros::|Q_OBJECT)\b' FLS.hpp FLS.cpp; then
+            echo "engine or middleware type found in a portable file"; exit 1
+          fi
+          echo "FLS.hpp + FLS.cpp depend only on <cstdint> <string> <vector> <cmath>"

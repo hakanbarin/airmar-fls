@@ -1,0 +1,9 @@
+build/
+cmake-build-*/
+test_fls
+test_fls_asan
+*.o
+*.obj
+*.exe
+*.out
+.DS_Store
